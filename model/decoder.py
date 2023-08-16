@@ -107,6 +107,37 @@ class SDFNet(nn.Module):
 
             return nn.Sequential(*nn.ModuleList(sdf_net))
 
+
+class DTNet(nn.Module):
+    def __init__(self, config, input_ch=1, hidden_dim=64, num_layers=2):
+        super(DTNet, self).__init__()
+        self.config = config
+        self.input_ch = input_ch
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+
+        self.model = self.get_model(tcnn_network=config['decoder']['tcnn_network'])
+
+    def forward(self, x):
+        out = self.model(x)
+
+        return out
+
+    def get_model(self):
+        print('DT net: using tcnn')
+        return tcnn.Network(
+            n_input_dims=self.input_ch,
+            n_output_dims=3,
+            network_config={
+                "otype": "FullyFusedMLP",
+                "activation": "ReLU",
+                "output_activation": "None",
+                "n_neurons": self.hidden_dim,
+                "n_hidden_layers": self.num_layers - 1,
+              },
+             # dtype=torch.float
+        )
+
 class ColorSDFNet(nn.Module):
     '''
     Color grid + SDF grid
@@ -144,7 +175,7 @@ class ColorSDFNet_v2(nn.Module):
     '''
     No color grid
     '''
-    def __init__(self, config, input_ch=3, input_ch_pos=12):
+    def __init__(self, config, input_ch=3, input_ch_pos=12, input_ch_time=1):
         super(ColorSDFNet_v2, self).__init__()
         self.config = config
         self.color_net = ColorNet(config, 
@@ -157,18 +188,31 @@ class ColorSDFNet_v2(nn.Module):
                 geo_feat_dim=config['decoder']['geo_feat_dim'],
                 hidden_dim=config['decoder']['hidden_dim'], 
                 num_layers=config['decoder']['num_layers'])
+        self.dt_net = DTNet(config,
+                input_ch=input_ch+input_ch_pos+input_ch_time,
+                hidden_dim=config['decoder']['hidden_dim'],
+                num_layers=config['decoder']['num_layers'])
             
-    def forward(self, embed, embed_pos):
+    def forward(self, embed, embed_pos, embed_time):
+
 
         if embed_pos is not None:
-            h = self.sdf_net(torch.cat([embed, embed_pos], dim=-1), return_geo=True) 
+            d_pos = self.dt_net(torch.cat([embed, embed_pos, embed_time], dim=-1))
         else:
-            h = self.sdf_net(embed, return_geo=True) 
+            d_pos = self.dt_net(embed, embed_time)
+
+        d_embed = self.embed_fn(d_pos)
+        d_embed_pos = self.embedpos_fn(d_pos)
+
+        if embed_pos is not None:
+            h = self.sdf_net(torch.cat([embed + d_embed, embed_pos + d_embed_pos], dim=-1), return_geo=True)
+        else:
+            h = self.sdf_net(embed + d_embed, return_geo=True)
         
         sdf, geo_feat = h[...,:1], h[...,1:]
         if embed_pos is not None:
-            rgb = self.color_net(torch.cat([embed_pos, geo_feat], dim=-1))
+            rgb = self.color_net(torch.cat([embed_pos + d_embed_pos, geo_feat], dim=-1))
         else:
             rgb = self.color_net(torch.cat([geo_feat], dim=-1))
         
-        return torch.cat([rgb, sdf], -1)
+        return torch.cat([rgb, sdf], -1), d_pos

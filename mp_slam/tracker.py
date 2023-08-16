@@ -50,6 +50,7 @@ class Tracker():
             batch['rgb']: RGB image [B, H, W, 3]
             batch['depth']: Depth image [B, H, W, 1]
             batch['direction']: Ray direction [B, H, W, 3]
+            batch['direction']: timestack [B]
             frame_id: Current frame id (int)
         '''
 
@@ -88,7 +89,9 @@ class Tracker():
             rays_o = c2w_est[...,:3, -1].repeat(self.config['tracking']['sample'], 1)
             rays_d = torch.sum(rays_d_cam[..., None, :] * c2w_est[:, :3, :3], -1)
 
-            ret = self.model.forward(rays_o, rays_d, target_s, target_d)
+            rays_t = batch['time'].repeat(self.config['tracking']['sample'], 1)
+
+            ret = self.model.forward(rays_o, rays_d, rays_t, target_s, target_d)
             loss = self.slam.get_loss_from_ret(ret)
             
             if best_sdf_loss is None:
